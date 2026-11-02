@@ -38,11 +38,11 @@ Create workforce users in **IAM Identity Center** (or your connected workforce d
 
 | Identity Center username | Display name | Email | Identity Center group(s) and matching Cognito group(s) |
 |---|---|---|---|
-| `portal.admin` | Avery Example | `portal.admin@example.com` | `usta-portal-admins`, `usta-portal-requesters` |
-| `portal.requester` | Morgan Sample | `portal.requester@example.com` | `usta-portal-requesters` |
-| `tournament.approver` | Taylor Demo | `tournament.approver@example.com` | `usta-tournament-approvers` |
-| `membership.approver` | Jamie Sample | `membership.approver@example.com` | `usta-membership-approvers` |
-| `playerdev.approver` | Casey Demo | `playerdev.approver@example.com` | `usta-player-development-approvers` |
+| `elena.rios` | Elena Rios | `elena.rios@example.com` | `usta-portal-admins`, `usta-portal-requesters` |
+| `marcus.chen` | Marcus Chen | `marcus.chen@example.com` | `usta-portal-requesters` |
+| `nina.patel` | Nina Patel | `nina.patel@example.com` | `usta-tournament-approvers` |
+| `daniel.brooks` | Daniel Brooks | `daniel.brooks@example.com` | `usta-membership-approvers` |
+| `sophia.kim` | Sophia Kim | `sophia.kim@example.com` | `usta-player-development-approvers` |
 
 Create the five groups in IAM Identity Center and assign these users as shown. Also create the same-named groups in the Cognito user pool and ensure each federated user's Cognito group membership is maintained or synchronized; the portal authorizes from Cognito's `cognito:groups` token claim. A user who needs multiple portal capabilities must belong to each corresponding group. For example, the sample admin is also in the requester group so they can submit requests.
 
