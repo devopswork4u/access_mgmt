@@ -6,7 +6,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 import provisioner
 import store
-from authz import normalize_groups, permissions_for_groups
+from authz import database_username_from_claims, normalize_roles, permissions_for_roles
 from config import ACCESS_LEVELS, AURORA, DEPARTMENTS, SCOPES, group_name
 
 st.set_page_config(page_title="USTA Data Access Management", page_icon=":tennis:", layout="wide")
@@ -31,7 +31,7 @@ COLS = ["id", "target_user", "department", "database_name", "scope", "access_lev
 
 # ---------- Authentication / authorization ----------
 try:
-    st.secrets["auth"]
+    auth_settings = st.secrets["auth"]
     authorization = st.secrets["authorization"]
 except (StreamlitSecretNotFoundError, KeyError):
     st.error("Authentication is not configured. Create `.streamlit/secrets.toml` from the example file.")
@@ -50,9 +50,14 @@ if not actor:
     st.error("Your identity provider did not return an email, preferred username, or subject claim.")
     st.stop()
 
-user_groups = normalize_groups(claims.get("cognito:groups", []))
-permissions = permissions_for_groups(user_groups, authorization)
-approver_groups = authorization.get("approver_groups", {})
+try:
+    default_database_username = database_username_from_claims(claims)
+except ValueError:
+    default_database_username = ""
+
+user_roles = normalize_roles(claims.get("roles", []))
+permissions = permissions_for_roles(user_roles, authorization)
+approver_roles = authorization.get("approver_roles", {})
 my_approver_departments = sorted(permissions["approver_departments"])
 is_admin = permissions["is_admin"]
 if not (is_admin or permissions["can_request"] or permissions["approver_departments"]):
@@ -79,7 +84,7 @@ with st.sidebar:
     if permissions["approver_departments"]:
         pages.extend(["Approval Queue", "Access Review"])
     if is_admin:
-        pages.extend(["All Requests", "Groups & Roles", "Access Review", "Audit Log"])
+        pages.extend(["All Requests", "Groups & Roles", "Audit Log"])
     page = st.radio("Navigate", pages)
     st.button("Sign out", on_click=st.logout)
 
@@ -103,7 +108,11 @@ elif page == "New Request":
     dbs = DEPARTMENTS[dept]["databases"]
     with st.form("request"):
         c1, c2 = st.columns(2)
-        target = c1.text_input("Target user", placeholder="e.g. jane.doe")
+        target_user = c1.text_input(
+            "Aurora MySQL username to receive access",
+            value=default_database_username,
+            help="Enter the MySQL login name that should receive the approved access.",
+        )
         db = c2.selectbox("Database", list(dbs))
         level = c1.selectbox("Access level", list(ACCESS_LEVELS))
         req_scope = c2.selectbox("Data scope (USTA section)", SCOPES,
@@ -114,21 +123,21 @@ elif page == "New Request":
         expiry = c4.date_input("Expiry (temporary only)", date.today() + timedelta(days=30))
         just = st.text_area("Business justification")
         if st.form_submit_button("Submit request", type="primary"):
-            if not target.strip() or not just.strip():
-                st.error("Target user and justification are required.")
+            if not target_user.strip() or not just.strip():
+                st.error("Aurora MySQL username and business justification are required.")
             else:
                 try:
+                    target_user = provisioner._ident(target_user.strip())
                     grp = group_name(db, level, req_scope)
-                    approver_group = approver_groups.get(dept)
-                    if not approver_group:
-                        raise ValueError(f"No approver group is configured for {dept}.")
-                    provisioner._ident(target.strip())
+                    approver_role = approver_roles.get(dept)
+                    if not approver_role:
+                        raise ValueError(f"No approver role is configured for {dept}.")
                     rid = store.create_request(dict(
-                        requestor=actor, target_user=target.strip(), department=dept, database_name=db,
+                        requestor=actor, target_user=target_user, department=dept, database_name=db,
                         db_group=grp, tables=tables, access_level=level, justification=just.strip(),
                         scope=req_scope, duration=duration, expiry=str(expiry) if duration == "Temporary" else None,
-                        approver=approver_group))
-                    st.success(f"Request #{rid} submitted and routed to the {approver_group} group.")
+                        approver=approver_role))
+                    st.success(f"Request #{rid} submitted for `{target_user}` and routed to the {approver_role} role.")
                 except ValueError as e:
                     st.error(str(e))
 
@@ -212,7 +221,7 @@ elif page == "Groups & Roles":
                     "Group": g,
                     "Level": lvl,
                     "Scope": "National",
-                    "Approver group": approver_groups.get(dept, "-"),
+                    "Approver role": approver_roles.get(dept, "-"),
                     "Members": ", ".join(m["target_user"] for m in members if m["db_group"] == g) or "-",
                 })
     seen = {r["Group"] for r in rows}
@@ -225,7 +234,7 @@ elif page == "Groups & Roles":
                 "Group": m["db_group"],
                 "Level": m["access_level"],
                 "Scope": m["scope"],
-                "Approver group": approver_groups.get(m["department"], "-"),
+                "Approver role": approver_roles.get(m["department"], "-"),
                 "Members": ", ".join(x["target_user"] for x in members if x["db_group"] == m["db_group"]),
             })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

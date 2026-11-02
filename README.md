@@ -1,16 +1,18 @@
 # USTA Data Access Management Portal
 
-Role-based access management for USTA data in Aurora MySQL, built with Python and Streamlit. Users sign in through an OIDC identity provider; portal permissions come only from signed group claims.
+Role-based access management for USTA data in Aurora MySQL, built with Python and Streamlit. Users sign in with Microsoft Entra ID; portal permissions come from signed app-role claims.
 
 ## Authentication setup
 
-The portal uses Streamlit's built-in OIDC support with a Cognito user pool as the OIDC provider. Configure IAM Identity Center as a federated identity provider for that Cognito pool. Streamlit's local callback URL is:
+The portal uses Streamlit's built-in OIDC support directly with a Microsoft Entra app registration. Cognito and IAM Identity Center are not required. In **App registrations**, register the portal as a single-tenant web app and add this local redirect URI:
 
 ```text
 http://localhost:8501/oauth2callback
 ```
 
-In the Cognito app client, allow this callback URL and request the `openid`, `email`, and `profile` scopes. Use the user pool's OIDC discovery URL as `server_metadata_url`. The Cognito ID token must include a stable identity claim (`email`, `preferred_username`, or `sub`) and the `cognito:groups` claim.
+Create five app roles with allowed member types **Users/Groups** (not Applications): `Portal.Admin`, `Portal.Requester`, `Approver.TournamentOperations`, `Approver.Membership`, and `Approver.PlayerDevelopment`. Assign users or Entra groups to these roles in the portal's **Enterprise application**. Entra includes assigned app roles in the signed `roles` claim.
+
+The OIDC discovery URL for your tenant is `https://login.microsoftonline.com/<TENANT_ID>/v2.0/.well-known/openid-configuration`. In `.streamlit/secrets.toml`, `client_id` must be the app registration's **Application (client) ID**, not its Object ID. The portal uses `preferred_username` for the database username when present, otherwise the email local part; ensure it is unique and MySQL-safe (letters, digits, underscore, period, or hyphen; maximum 64 characters).
 
 Create the local settings file from the non-secret template:
 
@@ -18,55 +20,54 @@ Create the local settings file from the non-secret template:
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-Replace the example Cognito values and group names. `cookie_secret` must be a long, random value. `.streamlit/secrets.toml` is git-ignored; do not commit it or share its client secret.
+Replace the example tenant/client IDs and client secret locally. Generate a long random `cookie_secret`. `.streamlit/secrets.toml` is git-ignored; never commit it or share the client secret.
 
-The `[authorization]` section maps Cognito groups to portal capabilities:
+The `[authorization]` section maps Entra app-role values to portal capabilities:
 
-- `usta-portal-admins` grants administrator access to all requests and audit functions.
-- `usta-portal-requesters` grants permission to submit and track requests.
-- `usta-tournament-approvers` approves and reviews Tournament Operations requests.
-- `usta-membership-approvers` approves and reviews Membership & Participation requests.
-- `usta-player-development-approvers` approves and reviews Player Development requests.
+- `Portal.Admin` grants portal administration and approval access across all departments, plus all-request and audit views.
+- `Portal.Requester` grants permission to submit and track requests.
+- `Approver.TournamentOperations` approves and reviews Tournament Operations requests.
+- `Approver.Membership` approves and reviews Membership & Participation requests.
+- `Approver.PlayerDevelopment` approves and reviews Player Development requests.
 
-Users without one of these configured group memberships are denied portal access. Each request is routed to its department's configured approver group. The approval audit log records the authenticated person's email (or stable subject), while the request stores the group used for authorization.
-
-**Group synchronization:** IAM Identity Center groups are not automatically copied into Cognito user-pool groups. Cognito's `cognito:groups` claim reflects Cognito group membership. Until an explicit synchronization path is configured, an administrator must maintain the Cognito groups and membership used by this portal. Do not treat Identity Center groups as effective portal roles unless that synchronization has been verified.
+Users without one of these assigned app roles are denied portal access. Each request is routed to its department's configured approver role. The approval audit log records the authenticated person's email (or stable subject), while the request stores the role used for authorization.
 
 ## Example users and group assignments
 
-Create workforce users in **IAM Identity Center** (or your connected workforce directory), not as traditional AWS IAM users. These fictional `example.com` accounts illustrate the portal group assignments; do not use them as real credentials.
+Use workforce users in your Microsoft Entra tenant. These fictional `example.com` accounts illustrate app-role assignments; do not use them as real credentials.
 
-| Identity Center username | Display name | Email | Identity Center group(s) and matching Cognito group(s) |
+| Entra username | Display name | Email | Entra app role(s) |
 |---|---|---|---|
-| `elena.rios` | Elena Rios | `elena.rios@example.com` | `usta-portal-admins`, `usta-portal-requesters` |
-| `marcus.chen` | Marcus Chen | `marcus.chen@example.com` | `usta-portal-requesters` |
-| `nina.patel` | Nina Patel | `nina.patel@example.com` | `usta-tournament-approvers` |
-| `daniel.brooks` | Daniel Brooks | `daniel.brooks@example.com` | `usta-membership-approvers` |
-| `sophia.kim` | Sophia Kim | `sophia.kim@example.com` | `usta-player-development-approvers` |
+| `elena.rios` | Elena Rios | `elena.rios@example.com` | `Portal.Admin`, `Portal.Requester` |
+| `marcus.chen` | Marcus Chen | `marcus.chen@example.com` | `Portal.Requester` |
+| `nina.patel` | Nina Patel | `nina.patel@example.com` | `Approver.TournamentOperations` |
+| `daniel.brooks` | Daniel Brooks | `daniel.brooks@example.com` | `Approver.Membership` |
+| `sophia.kim` | Sophia Kim | `sophia.kim@example.com` | `Approver.PlayerDevelopment` |
 
-Create the five groups in IAM Identity Center and assign these users as shown. Also create the same-named groups in the Cognito user pool and ensure each federated user's Cognito group membership is maintained or synchronized; the portal authorizes from Cognito's `cognito:groups` token claim. A user who needs multiple portal capabilities must belong to each corresponding group. For example, the sample admin is also in the requester group so they can submit requests.
+Create these app roles in the Entra app registration and assign each real user or Entra group the required roles through the Enterprise application. A person who needs multiple portal capabilities must receive each role; for example, the sample admin also has `Portal.Requester` so they can submit requests.
 
-These are portal authorization groups, not AWS permission groups: they do not grant AWS API access. Keep AWS service permissions on separate IAM roles and policies.
+These are portal app roles, not AWS permissions: they do not grant AWS API access. Keep AWS service permissions on separate IAM roles and policies.
+
+**Portal access is separate from database access.** `Portal.Admin` lets a person administer the portal and approve requests across departments; it does not create an Aurora login or grant MySQL privileges. When an approver approves a request, the portal's configured Aurora service account executes the SQL grant. The approver does not need personal Aurora credentials or `GRANT OPTION`. To give Elena database access herself, submit a request for her own signed-in account, choose the access level and scope, and approve it. The portal then creates or uses that MySQL account, creates the corresponding database role, and grants the role to that account. The `Admin` database access level means `ALL PRIVILEGES` on the requested database objects; it is not Aurora server administration.
 
 ## Start the portal
 
-From the project root, install requirements and start Streamlit:
+On macOS/Linux, start from the project root:
 
 ```bash
-python -m pip install -r requirements.txt
 ./startup.sh
 ```
 
-On Windows, use `startup.bat`. The portal opens at http://localhost:8501. For local development, set `AURORA_HOST=""` to run approvals in dry-run mode; generated SQL is recorded but not executed.
+`startup.sh` installs the requirements and starts in dry-run mode by default. The portal opens at http://localhost:8501; generated SQL is recorded but not executed, and the script does not prompt for Aurora credentials or test an Aurora connection. The Windows `startup.bat` launcher is unchanged and still expects an Aurora connection.
 
-For live provisioning, configure `AURORA_HOST`, `AURORA_PORT`, `AURORA_ADMIN_USER`, and `AURORA_ADMIN_PASSWORD`. The Aurora security group must allow MySQL traffic from the host running the portal, and the admin account must have the privileges needed to create users, roles, views, and grants.
+For live provisioning, explicitly set `AURORA_HOST`, `AURORA_PORT`, `AURORA_ADMIN_USER`, and `AURORA_ADMIN_PASSWORD` in your shell before starting. The script will not prompt for the password. The Aurora security group must allow MySQL traffic from the host running the portal, and the admin account must have the privileges needed to create users, roles, views, and grants. Use `./startup.sh --setup` only when intentionally creating the sample databases on that live Aurora instance.
 
 ## Portal workflow
 
-1. A requester signs in, submits a request, and selects a data department, database, access level, row scope, tables, duration, and business justification.
-2. The request is routed to the configured approver group for that department.
+1. A user in the Entra tenant signs in and submits a request. The Aurora MySQL username field defaults from the signed-in identity but can be edited to name the MySQL account that should receive access. The app validates its format, but does not look it up in Entra; the approver must verify the target username. The requester then selects a data department, database, access level, row scope, tables, duration, and business justification.
+2. The request is routed to the configured approver app role for that department.
 3. An authorized approver reviews the request and SQL preview, then approves or rejects it. A successful approval provisions access when Aurora is configured.
-4. Requesters can review their submissions. Approvers can review access for their departments; administrators can review all requests, audit events, groups, and roles.
+4. The signed-in Entra identity is recorded as the requester, while the manually entered MySQL username is the grant target. Requesters can review their submissions. Approvers can review access for their departments; administrators can approve across departments and review all requests, audit events, groups, and roles.
 
 The supported scopes include `National` and the USTA sections configured in the app. A non-national scope provisions a filtered view for the selected section.
 
@@ -74,8 +75,8 @@ The supported scopes include `National` and the USTA sections configured in the 
 
 | Problem | Fix |
 |---|---|
-| Sign-in configuration error | Create `.streamlit/secrets.toml` from the example and verify the Cognito app client, discovery URL, callback URL, and client secret. |
-| Signed in but denied | Confirm the Cognito ID token contains `cognito:groups` and that the user's groups match the names in `[authorization]`. |
-| Approval queue is empty | Confirm the request's department is mapped to a Cognito group containing the signed-in user. |
+| Sign-in configuration error | Create `.streamlit/secrets.toml` from the example and verify the Entra tenant ID, Application (client) ID, discovery URL, callback URL, and client secret. |
+| Signed in but denied | Confirm the Entra ID token contains the app role in `roles` and that it matches `[authorization]`. |
+| Approval queue is empty | Confirm the signed-in user or group has the department approver app role assigned in the Enterprise application. |
 | Connection timeout | Check Aurora network access and whether the current network permits TCP 3306. |
 | Request shows `Failed` | Inspect the Audit Log and verify the Aurora account's privileges and target database. |

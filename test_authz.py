@@ -4,27 +4,59 @@ import unittest
 from unittest.mock import patch
 
 import store
-from authz import permissions_for_groups
+from authz import database_username_from_claims, permissions_for_roles
 
 
 class AuthorizationTests(unittest.TestCase):
-    def test_group_claims_map_to_capabilities(self):
+    def test_database_username_comes_from_signed_identity(self):
+        self.assertEqual(
+            database_username_from_claims({"preferred_username": "Elena.Rios", "email": "other@example.com"}),
+            "elena.rios",
+        )
+        self.assertEqual(
+            database_username_from_claims({"email": "kaushikrahul08@example.com"}),
+            "kaushikrahul08",
+        )
+
+    def test_database_username_requires_identity_claim(self):
+        with self.assertRaises(ValueError):
+            database_username_from_claims({"sub": "opaque-subject"})
+
+    def test_entra_roles_map_to_capabilities(self):
         authorization = {
-            "admin_groups": ["portal-admin"],
-            "requester_groups": ["portal-requester"],
-            "approver_groups": {
-                "Tournament Operations": "tournament-approvers",
-                "Membership & Participation": "membership-approvers",
+            "admin_roles": ["Portal.Admin"],
+            "requester_roles": ["Portal.Requester"],
+            "approver_roles": {
+                "Tournament Operations": "Approver.TournamentOperations",
+                "Membership & Participation": "Approver.Membership",
             },
         }
 
-        permissions = permissions_for_groups(
-            ["portal-requester", "tournament-approvers"], authorization
+        permissions = permissions_for_roles(
+            ["Portal.Requester", "Approver.TournamentOperations"], authorization
         )
 
         self.assertTrue(permissions["can_request"])
         self.assertFalse(permissions["is_admin"])
         self.assertEqual(permissions["approver_departments"], {"Tournament Operations"})
+
+    def test_portal_admin_role_can_approve_all_departments(self):
+        authorization = {
+            "admin_roles": ["Portal.Admin"],
+            "approver_roles": {
+                "Tournament Operations": "Approver.TournamentOperations",
+                "Membership & Participation": "Approver.Membership",
+                "Player Development": "Approver.PlayerDevelopment",
+            },
+        }
+
+        permissions = permissions_for_roles(["Portal.Admin"], authorization)
+
+        self.assertTrue(permissions["is_admin"])
+        self.assertEqual(
+            permissions["approver_departments"],
+            {"Tournament Operations", "Membership & Participation", "Player Development"},
+        )
 
     def test_approval_filter_uses_authorized_departments(self):
         with tempfile.TemporaryDirectory() as directory:
